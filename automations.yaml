@@ -1,0 +1,116 @@
+alias: Automatic feeder
+description: ""
+trigger:
+  - platform: time
+    at: "04:00:00"
+    id: morningSet
+  - platform: time
+    at: "10:00:00"
+    id: afternoonSet
+  - platform: time
+    at: "17:00:00"
+    id: eveningSet
+  - platform: time
+    at: sensor.morning_feed_time
+    id: morningFeed
+  - platform: time
+    at: sensor.afternoon_feed_time
+    id: afternoonFeed
+  - platform: time
+    at: sensor.evening_feed_time
+    id: eveningFeed
+condition: []
+action:
+  - variables:
+      gramsPerDay: "{{ states('input_number.weight_dispensed_per_day')|int }}"
+      portionsPerDay: "{{ (gramsPerDay / states('number.feeder_portion_weight')|int)|int }}"
+      avgPortionsPerServing: "{{ (portionsPerDay / 3) }}"
+      morningPortions: "{{ avgPortionsPerServing|round(0, floor) + ((portionsPerDay % 3)) }}"
+      otherPortions: "{{ avgPortionsPerServing|round(0, floor) }}"
+      afternoonPortions: "{{ morningPortions + otherPortions}}"
+      alreadyDispensed: "{{ states('sensor.feeder_portions_dispensed_today')|int }}"
+      portionsToDispense: |
+        {% if 'morning' in trigger.id %}
+          {{ morningPortions - alreadyDispensed }}
+        {% elif 'afternoon' in trigger.id %}
+          {{ afternoonPortions - alreadyDispensed }}
+        {% elif 'evening' in trigger.id %}
+          {{ portionsPerDay - alreadyDispensed }}
+        {% else %}
+        0
+        {% endif %}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ 'set' in trigger.id|lower and
+              states('number.feeder_serving_to_dispense')|int !=
+              portionsToDispense|int and portionsToDispense|int > 0}}
+        sequence:
+          - service: number.set_value
+            data:
+              value: "{{ portionsToDispense }}"
+            target:
+              entity_id: number.feeder_serving_to_dispense
+          - delay:
+              hours: 0
+              minutes: 3
+              seconds: 0
+              milliseconds: 0
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ states('number.feeder_serving_to_dispense')|int !=
+                  portionsToDispense|int }}
+            then:
+              - service: notify.everyone
+                data:
+                  title: Cat feeder
+                  message: Could not change to correct portion size!
+                  data:
+                    push:
+                      interruption-level: time-sensitive
+                      sound:
+                        name: default
+              - stop: "ERROR: Could not change to correct portion size"
+      - conditions:
+          - condition: template
+            value_template: "{{ 'feed' in trigger.id|lower and portionsToDispense|int > 0 }}"
+        sequence:
+          - variables:
+              before: "{{ states('sensor.feeder_weight_dispensed_today') }}"
+          - service: button.press
+            data: {}
+            target:
+              entity_id: button.feeder_dispense
+          - delay:
+              hours: 0
+              minutes: 0
+              seconds: 15
+              milliseconds: 0
+          - variables:
+              after: "{{ states('sensor.feeder_weight_dispensed_today') }}"
+          - if:
+              - condition: template
+                value_template: "{{ before != after}}"
+            then:
+              - service: notify.everyone
+                data:
+                  message: >
+                    {{'cat has been fed ' +
+                    (states('sensor.feeder_weight_dispensed_today')|int)|string
+                    + '/' +
+                    (states('input_number.weight_dispensed_per_day')|int)|string
+                    + 'g today'}}
+                  title: cat
+            else:
+              - service: notify.everyone
+                data:
+                  title: Cat feeder
+                  message: Something went wrong and cat has NOT been fed!
+                  data:
+                    push:
+                      interruption-level: critical
+                      sound:
+                        name: default
+mode: single
